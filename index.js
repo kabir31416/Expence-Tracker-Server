@@ -1,15 +1,17 @@
 import express from "express";
 import cors from "cors";
 import { MongoClient, ObjectId } from "mongodb";
-import dotenv from 'dotenv'
+import dotenv from 'dotenv';
+
 dotenv.config();
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 5000;
+
 app.get('/', (req, res) => {
-    res.send('Wellcome to Expenceserver');
+    res.send('Welcome to Expense Server');
 });
 
 const uri = process.env.MONGODB_URI;
@@ -40,56 +42,253 @@ startServer();
 
 const Spend = () => db.collection("spend");
 
+
 app.get("/api/expence", async (req, res) => {
-    const {
-        category,
-        search,
-    } = req.query;
+    try {
+        const { category, search } = req.query;
+        const query = {};
 
-    let query = {};
+        if (category && category !== "All") {
+            query.category = category;
+        }
 
-    if (category) {
-        query.category = category;
-    }
+        if (search) {
+            query.title = {
+                $regex: search,
+                $options: "i",
+            };
+        }
 
-    if (search) {
-        query.$or = [
+        const totalExpense = await Spend().aggregate([
             {
-                title: {
-                    $regex: search,
-                    $options: "i",
+                $match: query,
+            },
+            {
+                $group: {
+                    _id: null,
+                    total: {
+                        $sum: "$amount",
+                    },
                 },
             },
-        ];
-    }
+        ]).toArray();
 
-    let cursor = Spend().find(query);
-
-    const total = await Spend().countDocuments(query);
-
-        const artworks = await cursor
-            .skip((page - 1) * Number(limit))
-            .limit(Number(limit))
+        const spends = await Spend()
+            .find(query)
+            .sort({ createdAt: -1 })
             .toArray();
 
-        res.json({
-            artworks,
+        const total = await Spend().countDocuments(query);
+
+        res.status(200).json({
+            spends,
             total,
-            currentPage: Number(page),
-            totalPages: Math.ceil(total / limit),
         });
-})
+    } catch (error) {
+        console.log(error);
+        res.status(500).json({ message: "Internal Server Error" });
+    }
+});
 
 app.post("/api/expence", async (req, res) => {
-    const spend = {
-        ...req.body,
-        amount: Number(req.body.amount),
-        createdAt: new Date()
+    try {
+        const spend = {
+            title: req.body.title,
+            category: req.body.category,
+            amount: Number(req.body.amount),
+            date: req.body.date,
+            createdAt: new Date(),
+        };
+
+        const result = await Spend().insertOne(spend);
+
+        res.status(201).json({
+            success: true,
+            insertedId: result.insertedId,
+        });
+    } catch (error) {
+        console.log(error);
+        res.status(500).json({ message: "Failed to create expense" });
     }
+});
 
-    const result = await Spend().insertOne(spend);
-})
+app.put('/api/expence/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { title, amount, category, date } = req.body;
+
+        if (!title || !amount || !category || !date) {
+            return res.status(400).json({ success: false, message: "All fields are required" });
+        }
+
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+            $set: {
+                title,
+                amount: Number(amount),
+                category,
+                date
+            }
+        };
+
+        const result = await Spend().updateOne(filter, updateDoc);
+
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ success: false, message: "Expense record not found" });
+        }
+        const updatedExpense = { _id: id, title, amount: Number(amount), category, date };
+
+        res.status(200).json({
+            success: true,
+            message: "Expense updated successfully",
+            updatedExpense
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: "Server Error running update" });
+    }
+});
+
+app.delete('/api/expence/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const result = await Spend().deleteOne({ _id: new ObjectId(id) });
+        if (result.deletedCount === 0) {
+            return res.status(404).json({ success: false, message: "Expense record not found" });
+        }
+        res.status(200).json({
+            success: true,
+            message: "Expense deleted successfully"
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: "Server Error running delete" });
+    }
+});
+
+app.get("/api/expense/dashboard", async (req, res) => {
+  try {
+    const budget = 35000;
+
+    const now = new Date();
 
 
+    const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
 
 
+    const todayStart = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate()
+    );
+
+    const tomorrow = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() + 1
+    );
+
+
+    const totalExpenseResult = await Spend()
+      .aggregate([
+        {
+          $group: {
+            _id: null,
+            total: {
+              $sum: "$amount",
+            },
+          },
+        },
+      ])
+      .toArray();
+
+    const totalExpense = totalExpenseResult[0]?.total || 0;
+
+
+    const totalTransactions = await Spend().countDocuments();
+
+    const monthlyExpenseResult = await Spend()
+      .aggregate([
+        {
+          $match: {
+            createdAt: {
+              $gte: firstDayOfMonth,
+              $lt: lastDayOfMonth,
+            },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: {
+              $sum: "$amount",
+            },
+          },
+        },
+      ])
+      .toArray();
+
+    const monthlyExpense = monthlyExpenseResult[0]?.total || 0;
+
+
+    const todayExpenseResult = await Spend()
+      .aggregate([
+        {
+          $match: {
+            createdAt: {
+              $gte: todayStart,
+              $lt: tomorrow,
+            },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: {
+              $sum: "$amount",
+            },
+          },
+        },
+      ])
+      .toArray();
+
+    const todayExpense = todayExpenseResult[0]?.total || 0;
+
+
+    const remainingBudget = budget - monthlyExpense;
+
+
+    const lastDate = new Date(
+      now.getFullYear(),
+      now.getMonth() + 1,
+      0
+    ).getDate();
+
+    const remainingDays =
+      lastDate - now.getDate() + 1;
+
+    const dailySafeSpend =
+      remainingDays > 0
+        ? Math.floor(remainingBudget / remainingDays)
+        : 0;
+
+
+    res.status(200).json({
+      totalExpense,
+      totalTransactions,
+      monthlyExpense,
+      todayExpense,
+      remainingBudget,
+      dailySafeSpend,
+      budget,
+    });
+
+  } catch (error) {
+    console.log(error);
+
+    res.status(500).json({
+      message: "Failed to load dashboard",
+    });
+  }
+});
